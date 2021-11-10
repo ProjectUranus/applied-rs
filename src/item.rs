@@ -1,9 +1,12 @@
 use nbt::Blob;
 use std::ops::Add;
 use std::cmp::Ordering;
+use std::hash::Hash;
+use crate::storage::{StoredItemType, StoredItemTypes};
+use std::convert::TryInto;
 
 /// Representing a "definition stack"
-#[derive(PartialEq)]
+#[derive(PartialEq, Debug)]
 pub struct Item {
     pub id: String,
     pub damage: i32,
@@ -25,6 +28,12 @@ impl Ord for Item {
     }
 }
 
+impl StoredItemType for Item {
+    fn stored_type() -> StoredItemTypes {
+        StoredItemTypes::Item
+    }
+}
+
 impl Item {
     pub fn new(id: &str) -> Self {
         Item {
@@ -32,35 +41,6 @@ impl Item {
             damage: 0,
             max_stack_size: 64,
             tag: Blob::default()
-        }
-    }
-}
-
-#[derive(Ord, PartialOrd, Eq, PartialEq, Clone)]
-pub struct StoredItem<'a> {
-    pub item: &'a Item,
-    pub count: i32,
-}
-
-impl<'a> StoredItem<'a> {
-    pub fn new(item: &'a Item, count: i32) -> Self {
-        StoredItem {
-            item, count
-        }
-    }
-}
-
-impl Add for StoredItem<'_> {
-    type Output = Self;
-
-    fn add(self, rhs: Self) -> Self::Output {
-        if self.item == rhs.item {
-            StoredItem {
-                item: self.item,
-                count: self.count + rhs.count
-            }
-        } else {
-            self
         }
     }
 }
