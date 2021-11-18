@@ -2,21 +2,22 @@ use crate::item::{Item};
 use std::collections::BTreeMap;
 use std::cmp::{max, min, Ordering};
 use std::slice::Iter;
-use std::hash::Hash;
 use std::ops::Add;
 use std::convert::TryInto;
+use crate::log::Transactions;
+use serde::Serialize;
 
 pub enum StoredItemTypes {
     Item,
     Fluid
 }
 
-pub trait StoredItemType: Sized + Sync + Send + PartialEq + PartialOrd + Ord {
+pub trait StoredItemType: Sized + Sync + Send + PartialEq + PartialOrd + Ord + Serialize {
     fn stored_type() -> StoredItemTypes;
 }
 
 /// Capacity, max item types
-#[derive(Ord, PartialOrd, Eq, PartialEq, Debug)]
+#[derive(Ord, PartialOrd, Eq, PartialEq, Debug, Serialize)]
 pub struct StorageCellType(i32, i32);
 
 impl StorageCellType {
@@ -34,7 +35,7 @@ pub const CELL_TYPE_4K: StorageCellType = StorageCellType(4096, 63);
 pub const CELL_TYPE_16K: StorageCellType = StorageCellType(16384, 63);
 pub const CELL_TYPE_64K: StorageCellType = StorageCellType(65536, 63);
 
-#[derive(Ord, PartialOrd, Eq, PartialEq, Debug)]
+#[derive(Ord, PartialOrd, Eq, PartialEq, Debug, Serialize)]
 pub struct StoredItem<'a, T: StoredItemType> {
     pub item: &'a T,
     pub count: i32,
@@ -72,12 +73,12 @@ impl<T: StoredItemType> Add for StoredItem<'_, T> {
     }
 }
 
-#[derive(Debug, PartialEq, Clone, Default, Ord, PartialOrd, Eq)]
+#[derive(Debug, PartialEq, Clone, Default, Ord, PartialOrd, Eq, Serialize)]
 pub struct StorageCellConfig {
     pub priority: i32
 }
 
-#[derive(Debug, Clone, Eq, Ord)]
+#[derive(Debug, Clone, Eq, Ord, Serialize)]
 pub struct StorageCell<'a, T: StoredItemType> {
     pub config: StorageCellConfig,
     pub stored_types: i32,
@@ -100,6 +101,17 @@ impl<'a, T: StoredItemType> PartialOrd for StorageCell<'a, T> {
 }
 
 impl<'a, T: StoredItemType> StorageCell<'a, T> {
+    pub fn clear(&mut self) {
+        *self = StorageCell {
+            cell_type: self.cell_type.clone(),
+            config: self.config.clone(),
+            stored_types: 0,
+            bytes_used: 0,
+            stored_items: Default::default(),
+            stored_items_count: 0
+        }
+    }
+
     pub fn calc_stored_bytes(cell_type: &StorageCellType, stored_items: &BTreeMap<&T, StoredItem<T>>) -> i32 {
         let bytes_per_type = cell_type.get_bytes_per_type();
         let mut bytes: i32 = bytes_per_type * stored_items.keys().count() as i32;
@@ -129,7 +141,7 @@ impl<'a, T: StoredItemType> StorageCell<'a, T> {
         self.cell_type.0 - self.bytes_used
     }
 
-    fn get_free_space(&self, item: &StoredItem<T>) -> i32 {
+    pub fn get_free_space(&self, item: &StoredItem<T>) -> i32 {
         let bytes_per_type = self.cell_type.get_bytes_per_type();
         let stored_items = &self.stored_items;
         if stored_items.contains_key(item.item) {
@@ -144,21 +156,36 @@ impl<'a, T: StoredItemType> StorageCell<'a, T> {
         }
     }
 
+    pub fn is_full(&self) -> bool {
+        return self.bytes_used == self.cell_type.0;
+    }
+
     pub fn insert(&mut self, item: StoredItem<'a, T>) -> i32 {
-        if self.bytes_used == self.cell_type.0
-        {
-            return 0
+        if self.is_full() {
+            // Cell is full, nothing happens
+            return 0;
         }
+        let mut transactions = vec![];
         let count = self.get_free_space(&item);
         if count > 0 {
-            let to_store = StoredItem {
-                item: item.item,
-                count
-            };
-            self.stored_items.insert(item.item, to_store);
+            let count = min(count, item.count);
+            if self.stored_items.contains_key(item.item) {
+                let mut stored_item = self.stored_items.get_mut(item.item).unwrap();
+                stored_item.count += count;
+                transactions.push(Transactions::Insert(count));
+            } else {
+                let to_store = StoredItem {
+                    item: item.item,
+                    count
+                };
+                self.stored_items.insert(item.item, to_store);
+                transactions.push(Transactions::InsertNewItem);
+                transactions.push(Transactions::Insert(count));
+            }
             self.refresh_cache();
+            return count;
         }
-        count
+        0
     }
 
     pub fn refresh_cache(&mut self) {
